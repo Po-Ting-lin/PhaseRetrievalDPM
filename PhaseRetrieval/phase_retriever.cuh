@@ -4,13 +4,14 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
-#include <cufft.h>
 #include <opencv2/opencv.hpp>
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 #include "cuda_error.cuh"
 #include "parameters.h"
 #include "utils.h"
+#include <thrust/device_vector.h>
+#include <thrust/extrema.h>
 
 typedef unsigned int uint;
 
@@ -42,6 +43,8 @@ inline __device__ void mulAndScaleModified(
     fComplex t = { c * (a.x * b.x - a.y * b.y), c * (a.y * b.x + a.x * b.y) };
     d = t;
 }
+
+
 
 __global__ void padKernelKernel(
     float* d_Dst,
@@ -120,22 +123,21 @@ void modulateAndNormalize(
     int padding
 );
 
-class PhaseRetriever
+struct PhaseRetrieverInfo
 {
-public:
-    PhaseRetriever(cv::Mat& src);
-    ~PhaseRetriever();
-    void Process();
-
-private:
-    uchar* _image;
-    int _width;
-    int _height;
-
-    void _getWrappedImage();
-    void _getUnWrappedImage();
-    void _fft();
-    void _cropCCT();
-    void _ifft();
-
+    cv::Mat* Image;
+    int Width;
+    int HalfWidth;
+    int Height;
+    int NumberOfRealElements;
+    int NumberOfComplexElements;
 };
+
+void processPhaseRetriever(cv::Mat& src);
+void getWrappedImage(PhaseRetrieverInfo& info);
+void getUnwrappedImage();
+__global__ void complexToMagnitude(fComplex* src, float* dst, int width, int height);
+__global__ void copyInterferenceComponentRoughly(float* src, float* dst, int yOffset, int xRange, int yRange, int srcWidth, int srcHeight, int dstWidth);
+__global__ void copyInterferenceComponentDebug(float* src, float* dst, int centerX, int centerY, int srcWidth, int srcHeight, int dstWidth, int dstHeight);
+__global__ void copyInterferenceComponent(fComplex* src, fComplex* dst, int centerX, int centerY, int srcWidth, int srcHeight, int dstWidth, int dstHeight);
+__global__ void applyArcTan(fComplex* src, float* dst, int srcWidth, int srcHeight);

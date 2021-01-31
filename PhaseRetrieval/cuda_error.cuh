@@ -3,6 +3,7 @@
 #include "device_launch_parameters.h"
 #include <iostream>
 #include <stdio.h>
+#include <cufft.h>
 
 #define gpuErrorCheck(ans) { gpuAssert((ans), __FILE__, __LINE__, true); }
 #define getLastCudaError(msg) {__getLastCudaError (msg, __FILE__, __LINE__);}

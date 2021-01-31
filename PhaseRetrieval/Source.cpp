@@ -1,4 +1,5 @@
 #include <opencv2/opencv.hpp>
+#include "phase_retriever.cuh"
 
 static void displayImage(const cv::Mat& image, const char* name, bool mag) {
 	cv::Mat Out;
@@ -24,10 +25,11 @@ int main(void) {
 		return -1;
 	}
 
-	displayImage(sp, "sp1", true);
-	displayImage(bg, "bg1", true);
+	//displayImage(sp, "sp1", true);
+	//displayImage(bg, "bg1", true);
 
-
+	processPhaseRetriever(sp);
+	
 
 
 	return 0;
