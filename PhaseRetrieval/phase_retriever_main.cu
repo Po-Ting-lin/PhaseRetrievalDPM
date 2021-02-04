@@ -1,291 +1,175 @@
 #include "phase_retriever.cuh"
 #include <cufft.h>
+#include <iostream>
 
+#define D_NUM_STREAMS 8
 #define DEBUG false
+#define TIMER true
 
 void processPhaseRetriever(cv::Mat& src) {
 	PhaseRetrieverInfo info;
 	info.Image = &src;
+	info.WrappedImage = nullptr;
 	info.Width = src.cols;
-	info.HalfWidth = (src.cols / 2 + 1);
 	info.Height = src.rows;
+	info.CroppedWidth = src.cols / 4;
+	info.CroppedHeight = src.rows / 4;
 	info.NumberOfRealElements = src.cols * src.rows;
-	info.NumberOfComplexElements = (src.cols / 2 + 1) * src.rows;
+	info.NumberOfCropElements = (src.cols / 4) * (src.rows / 4);
+	info.Blocks = new dim3(TILE_DIM, TILE_DIM);
+	info.Grids = new dim3(iDivUp(info.Width, TILE_DIM), iDivUp(info.Height, TILE_DIM));
+	info.CroppedGrids = new dim3(iDivUp(info.CroppedWidth, TILE_DIM), iDivUp(info.CroppedHeight, TILE_DIM));
+
+#if TIMER
+	auto t0 = std::chrono::system_clock::now();
+#endif
+	
 	getWrappedImage(info);
-	getUnwrappedImage();
+
+#if TIMER
+	auto t1 = std::chrono::system_clock::now();
+#endif
+
+	printTime(t0, t1, "getWrappedImage");
+	getUnwrappedImage(info);
+
+	delete info.Blocks;
+	delete info.Grids;
+	delete info.CroppedGrids;
 }
 
 void getWrappedImage(PhaseRetrieverInfo& info) {
-	// fft
+	float* d_magnitude;
+	float* d_firstCrop;
 	uchar* image_ptr = info.Image->data;
-	float* d_data;
+	uchar* d_image_ptr;
+	fComplex* d_data;
 	fComplex* d_Spectrum;
+	fComplex* d_SecondCrop;
+	fComplex* d_rawWrapped;
 
-	float* h_data = new float[info.Width * info.Height];
-	for (int i = 0; i < info.Width * info.Height; i++) {
-		h_data[i] = image_ptr[i];
+	// make a FFT plan
+	cufftHandle fftPlan;
+	cufftHandle ifftPlan;
+	gpuErrorCheck(cufftPlan2d(&fftPlan, info.Height, info.Width, CUFFT_C2C));
+	gpuErrorCheck(cufftPlan2d(&ifftPlan, info.CroppedWidth, info.CroppedHeight, CUFFT_C2C));
+
+
+	// aysn H to D
+	cudaStream_t stream[D_NUM_STREAMS];
+	for (int i = 0; i < D_NUM_STREAMS; i++) {
+		cudaStreamCreate(&stream[i]);
+	}
+	gpuErrorCheck(cudaMalloc((uchar**)&d_image_ptr, info.NumberOfRealElements * sizeof(uchar)));
+	gpuErrorCheck(cudaMalloc((fComplex**)&d_data, info.NumberOfRealElements * sizeof(fComplex)));
+	int offset = 0;
+	int data_elements_per_stream = info.NumberOfRealElements / D_NUM_STREAMS;
+	int data_bytes_per_stream = info.NumberOfRealElements * sizeof(uchar) / D_NUM_STREAMS;
+	dim3 grid(iDivUp(data_elements_per_stream, TILE_DIM));
+	dim3 block(TILE_DIM);
+	for (int i = 0; i < D_NUM_STREAMS; i++) {
+		offset = i * data_elements_per_stream;
+		gpuErrorCheck(cudaMemcpyAsync(&d_image_ptr[offset], &image_ptr[offset], data_bytes_per_stream, cudaMemcpyHostToDevice, stream[i]));
+		realToComplex << <grid, block, 0, stream[i] >> > (&d_image_ptr[offset], &d_data[offset], info.NumberOfRealElements);
+	}
+	gpuErrorCheck(cudaDeviceSynchronize());
+	for (int i = 0; i < D_NUM_STREAMS; i++) {
+		gpuErrorCheck(cudaStreamDestroy(stream[i]));
 	}
 
-	cufftHandle fftPlan;
-	long src_byte_size = info.NumberOfRealElements * sizeof(float);
-	gpuErrorCheck(cudaMalloc((float**)&d_data, src_byte_size));
-	gpuErrorCheck(cudaMalloc((void**)&d_Spectrum, info.NumberOfComplexElements * sizeof(fComplex)));
-	gpuErrorCheck(cudaMemcpy(d_data, h_data, src_byte_size, cudaMemcpyHostToDevice));
-	gpuErrorCheck(cufftPlan2d(&fftPlan, info.Height, info.Width, CUFFT_R2C));
-	gpuErrorCheck(cufftExecR2C(fftPlan, (cufftReal*)d_data, (cufftComplex*)d_Spectrum));
+	// fft
+	gpuErrorCheck(cudaMalloc((fComplex**)&d_Spectrum, info.NumberOfRealElements * sizeof(fComplex)));
+	gpuErrorCheck(cufftExecC2C(fftPlan, (cufftComplex*)d_data, (cufftComplex*)d_Spectrum, CUFFT_FORWARD));
 	gpuErrorCheck(cudaDeviceSynchronize());
-	gpuErrorCheck(cudaFree(d_data));
-
 
 	// magnitude
-
-	float* d_magnitude;
-	gpuErrorCheck(cudaMalloc((float**)&d_magnitude, info.NumberOfComplexElements * sizeof(float)));
-	dim3 blocks(TILE_DIM, TILE_DIM);
-	dim3 grids(iDivUp(info.HalfWidth, TILE_DIM), iDivUp(info.Height, TILE_DIM));
-	complexToMagnitude << <grids, blocks >> > (d_Spectrum, d_magnitude, info.HalfWidth, info.Height);
+	gpuErrorCheck(cudaMalloc((float**)&d_magnitude, info.NumberOfRealElements * sizeof(float)));
+	complexToMagnitude << <*info.Grids, *info.Blocks >> > (d_Spectrum, d_magnitude, info.Width, info.Height);
 	gpuErrorCheck(cudaDeviceSynchronize());
 
 #if DEBUG
-	float* h_magnitude = (float*)malloc(info.NumberOfComplexElements * sizeof(float));
-	gpuErrorCheck(cudaMemcpy(h_magnitude, d_magnitude, info.NumberOfComplexElements * sizeof(float), cudaMemcpyDeviceToHost));
-	displayImage(h_magnitude, info.HalfWidth, info.Height, true);
+	float* h_magnitude = (float*)malloc(info.NumberOfRealElements * sizeof(float));
+	gpuErrorCheck(cudaMemcpy(h_magnitude, d_magnitude, info.NumberOfRealElements * sizeof(float), cudaMemcpyDeviceToHost));
+	displayImage(h_magnitude, info.Width, info.Height, true);
 #endif
 
 	// find max index
-	float* d_firstCrop;
-	int frist_cropped_width = info.Width / 8;
-	int first_cropped_height = info.Height / 2;
-	gpuErrorCheck(cudaMalloc((float**)&d_firstCrop, frist_cropped_width * first_cropped_height * sizeof(float)));
-	copyInterferenceComponentRoughly << <grids, blocks >> > (d_magnitude, d_firstCrop, info.Height / 4, frist_cropped_width, first_cropped_height, info.HalfWidth, info.Height, frist_cropped_width);
+	gpuErrorCheck(cudaMalloc((float**)&d_firstCrop, info.NumberOfCropElements * sizeof(float)));
+	copyInterferenceComponentRoughly << <*info.CroppedGrids, *info.Blocks >> > (d_magnitude, d_firstCrop, info.Width, info.Height, info.CroppedWidth, info.CroppedHeight);
 	gpuErrorCheck(cudaDeviceSynchronize());
 
 #if DEBUG
-	float* h_firstCrop = (float*)malloc(first_cropped_height * frist_cropped_width * sizeof(float));
-	gpuErrorCheck(cudaMemcpy(h_firstCrop, d_firstCrop, first_cropped_height * frist_cropped_width * sizeof(float), cudaMemcpyDeviceToHost));
-	displayImage(h_firstCrop, frist_cropped_width, first_cropped_height, true);
+	float* h_firstCrop = (float*)malloc(info.NumberOfCropElements * sizeof(float));
+	gpuErrorCheck(cudaMemcpy(h_firstCrop, d_firstCrop, info.NumberOfCropElements * sizeof(float), cudaMemcpyDeviceToHost));
+	displayImage(h_firstCrop, info.CroppedWidth, info.CroppedHeight, true);
 #endif
 
 	thrust::device_ptr<float> d_ptr(d_firstCrop);
-	thrust::device_vector<float> d_vec(d_ptr, d_ptr + frist_cropped_width * first_cropped_height);
+	thrust::device_vector<float> d_vec(d_ptr, d_ptr + info.NumberOfCropElements);
 	thrust::device_vector<float>::iterator iter = thrust::max_element(d_vec.begin(), d_vec.end());
 	unsigned int index = iter - d_vec.begin();
 	float max_val = *iter;
-	int max_loc_x = index % frist_cropped_width;
-	int max_loc_y = index / frist_cropped_width + info.Height / 4;
-	std::cout << "Position is x: " << max_loc_x << "y: "<< max_loc_y << std::endl;
-	gpuErrorCheck(cudaFree(d_firstCrop));
-
+	int max_cropped_x = index % info.CroppedWidth;
+	int max_cropped_y = index / info.CroppedWidth;
+	int max_x = max_cropped_x < info.CroppedWidth / 2 ? max_cropped_x + 7 * info.Width / 8 : max_cropped_x - info.CroppedWidth / 2;
+	int max_y = max_cropped_y + info.Height / 2;
+	//std::cout << "Position is x: " << max_loc_x << "y: " << max_loc_y << std::endl;
 
 	// crop
-	int second_cropped_width = info.Width / 4;
-	int second_cropped_height = info.Height / 4;
-	dim3 croppedGrids(iDivUp(second_cropped_width, TILE_DIM), iDivUp(second_cropped_height, TILE_DIM));
-
 #if DEBUG
 	float* d_SecondCropDebug;
-	gpuErrorCheck(cudaMalloc((float**)&d_SecondCropDebug, second_cropped_width * second_cropped_height * sizeof(float)));
-	copyInterferenceComponentDebug << <croppedGrids, blocks >> > (d_magnitude, d_SecondCropDebug, max_loc_x, max_loc_y, info.HalfWidth, info.Height, second_cropped_width, second_cropped_height);
+	gpuErrorCheck(cudaMalloc((float**)&d_SecondCropDebug, info.NumberOfCropElements * sizeof(float)));
+	copyInterferenceComponentDebug << <*info.CroppedGrids, *info.Blocks >> > (d_magnitude, d_SecondCropDebug, max_x, max_y, info.Width, info.Height, info.CroppedWidth, info.CroppedHeight);
 	gpuErrorCheck(cudaDeviceSynchronize());
 
-	float* h_SecondCropDebug = (float*)malloc(second_cropped_width * second_cropped_height * sizeof(float));
-	gpuErrorCheck(cudaMemcpy(h_SecondCropDebug, d_SecondCropDebug, second_cropped_height * second_cropped_width * sizeof(float), cudaMemcpyDeviceToHost));
-	displayImage(h_SecondCropDebug, second_cropped_width, second_cropped_height, false);
+	float* h_SecondCropDebug = (float*)malloc(info.NumberOfCropElements * sizeof(float));
+	gpuErrorCheck(cudaMemcpy(h_SecondCropDebug, d_SecondCropDebug, info.NumberOfCropElements * sizeof(float), cudaMemcpyDeviceToHost));
+	displayImage(h_SecondCropDebug, info.CroppedWidth, info.CroppedHeight, false);
 #endif
-	
-	fComplex* d_SecondCrop;
-	gpuErrorCheck(cudaMalloc((fComplex**)&d_SecondCrop, second_cropped_width * second_cropped_height * sizeof(fComplex)));
-	copyInterferenceComponent << <croppedGrids, blocks >> > (d_Spectrum, d_SecondCrop, max_loc_x, max_loc_y, info.HalfWidth, info.Height, second_cropped_width, second_cropped_height);
+	gpuErrorCheck(cudaMalloc((fComplex**)&d_SecondCrop, info.NumberOfCropElements * sizeof(fComplex)));
+	copyInterferenceComponent << <*info.CroppedGrids, *info.Blocks >> > (d_Spectrum, d_SecondCrop, max_x, max_y, info.Width, info.Height, info.CroppedWidth, info.CroppedHeight);
 	gpuErrorCheck(cudaDeviceSynchronize());
 
 	// ifft
-	fComplex* d_rawWrapped;
-	cufftHandle ifftPlan;
-	gpuErrorCheck(cudaMalloc((fComplex**)&d_rawWrapped, second_cropped_width * second_cropped_height * sizeof(fComplex)));
-	gpuErrorCheck(cufftPlan2d(&ifftPlan, second_cropped_width, second_cropped_height, CUFFT_C2C));
+	gpuErrorCheck(cudaMalloc((fComplex**)&d_rawWrapped, info.NumberOfCropElements * sizeof(fComplex)));
 	gpuErrorCheck(cufftExecC2C(ifftPlan, (cufftComplex*)d_SecondCrop, (cufftComplex*)d_rawWrapped, CUFFT_INVERSE));
 	gpuErrorCheck(cudaDeviceSynchronize());
-	gpuErrorCheck(cudaFree(d_SecondCrop));
 
-	// test ifft
-	//float* d_rawV;
-	//gpuErrorCheck(cudaMalloc((float**)&d_rawV, second_cropped_width * second_cropped_height * sizeof(float)));
-	//complexToMagnitude << <croppedGrids, blocks >> > (d_rawWrapped, d_rawV, second_cropped_width, second_cropped_height);
-	//gpuErrorCheck(cudaDeviceSynchronize());
-	//float* h_rawWrapped = (float*)malloc(second_cropped_width * second_cropped_height * sizeof(float));
-	//gpuErrorCheck(cudaMemcpy(h_rawWrapped, d_rawV, second_cropped_height * second_cropped_width * sizeof(float), cudaMemcpyDeviceToHost));
-	//displayImage(h_rawWrapped, second_cropped_width, second_cropped_height, false);
-
-	//// arctan
-	float* d_wrapped;
-	gpuErrorCheck(cudaMalloc((float**)&d_wrapped, second_cropped_width * second_cropped_height * sizeof(float)));
-	applyArcTan << <croppedGrids, blocks >> > (d_rawWrapped, d_wrapped, second_cropped_width, second_cropped_height);
+	// arctan
+	gpuErrorCheck(cudaMalloc((float**)&info.WrappedImage, info.NumberOfCropElements * sizeof(float)));
+	applyArcTan << <*info.CroppedGrids, *info.Blocks >> > (d_rawWrapped, info.WrappedImage, info.CroppedWidth, info.CroppedHeight);
 	gpuErrorCheck(cudaDeviceSynchronize());
 
-	float* h_wrapped = (float*)malloc(second_cropped_width * second_cropped_height * sizeof(float));
-	gpuErrorCheck(cudaMemcpy(h_wrapped, d_wrapped, second_cropped_height * second_cropped_width * sizeof(float), cudaMemcpyDeviceToHost));
-	displayImage(h_wrapped, second_cropped_width, second_cropped_height, false);
+	// free
+	gpuErrorCheck(cufftDestroy(fftPlan));
+	gpuErrorCheck(cufftDestroy(ifftPlan));
+	gpuErrorCheck(cudaFree(d_data));
+	gpuErrorCheck(cudaFree(d_magnitude));
+	gpuErrorCheck(cudaFree(d_firstCrop));
+	gpuErrorCheck(cudaFree(d_SecondCrop));
+	gpuErrorCheck(cudaFree(d_rawWrapped));
 }
 
-void getUnwrappedImage() {
+void getUnwrappedImage(PhaseRetrieverInfo& info) {
+#if true
+	float* h_wrapped_image = (float*)malloc(info.NumberOfCropElements * sizeof(float));
+	gpuErrorCheck(cudaMemcpy(h_wrapped_image, info.WrappedImage, info.NumberOfCropElements * sizeof(float), cudaMemcpyDeviceToHost));
+	displayImage(h_wrapped_image, info.CroppedWidth, info.CroppedHeight, false);
+#endif
 
+	float* dx;
+	float* dy;
+	gpuErrorCheck(cudaMalloc((float**)&dx, info.NumberOfCropElements * sizeof(float)));
+	gpuErrorCheck(cudaMalloc((float**)&dy, info.NumberOfCropElements * sizeof(float)));
+	// diff
+
+	// F1
+
+	// F2
+
+	// DCT
+
+	// divide
+
+	// iDCT
 }
-
-
-
-//////
-//#define IMAGE_DIM 256
-//
-//grid = dim3(IMAGE_DIM / 16, IMAGE_DIM / 16, 1);
-//
-//threads = dim3(16, 16, 1);
-//
-//// Declare handles to the FFT plans
-//
-//cufftHandle forwardFFTPlan;
-//
-//cufftHandle inverseFFTPlan;
-//
-//// Create the plans -- forward and reverse (Real2Complex, Complex2Real)
-//
-//CUFFT_SAFE_CALL(cufftPlan2d(&forwardFFTPlan, IMAGE_DIM, IMAGE_DIM, CUFFT_R2C));
-//
-//CUFFT_SAFE_CALL(cufftPlan2d(&inverseFFTPlan, IMAGE_DIM, IMAGE_DIM, CUFFT_C2R));
-//
-//int num_real_elements = IMAGE_DIM * IMAGE_DIM;
-//
-//int num_complex_elements = IMAGE_DIM * (IMAGE_DIM / 2 + 1);
-//
-//// HOST MEMORY
-//
-//float* h_img;
-//
-//float* h_imgF;
-//
-//// ALLOCATE HOST MEMORY
-//
-//h_img = (float*)malloc(m_num_real_elements * sizeof(float));
-//
-//h_complex_imgSpec = (cufftComplex*)malloc(m_num_complex_elements * sizeof(cufftComplex));
-//
-//h_imgF = (float*)malloc(m_num_real_elements * sizeof(float));
-//
-//for (int x = 0; x < IMAGE_DIM; x++)
-//
-//{
-//
-//	for (int y = 0; y < IMAGE_DIM; y++)
-//
-//	{
-//
-//		// initialize the input image memory somehow
-//
-//		// (this probably comes from a file or image buffer or something)
-//
-//		h_img[y * IMAGE_DIM + x] = 0.0f;
-//
-//	}
-//
-//}
-//
-//// DEVICE MEMORY
-//
-//float* d_img;
-//
-//cufftComplex* d_complex_imgSpec;
-//
-//float* d_imgF;
-//
-//// ALLOCATE DEVICE MEMORY
-//
-//(cudaMalloc((void**)&img, m_num_real_elements * sizeof(float)));
-//
-//(cudaMalloc((void**)&d_complex_imgSpec, m_num_complex_elements * sizeof(cufftComplex)));
-//
-//(cudaMalloc((void**)&img, m_num_real_elements * sizeof(float)));
-//
-//// copy host memory to device (input image)
-//
-//(cudaMemcpy(d_img, h_img, m_num_real_elements * sizeof(float), cudaMemcpyHostToDevice));
-//
-//
-//
-//// now run the forward FFT on the device (real to complex)
-//
-//CUFFT_SAFE_CALL(cufftExecR2C(forwardFFTPlan, d_img, d_complex_imgSpec));
-//
-//// copy the DEVICE complex data to the HOST
-//
-//// NOTE: we are only doing this so that you can see the data -- in general you want
-//
-//// to do your computation on the GPU without wasting the time of copying it back to the host
-//
-//(cudaMemcpy(h_complex_imgSpec, d_complex_imgSpec, m_num_complex_elements * sizeof(cufftComplex), cudaMemcpyDeviceToHost));
-//
-//// print the complex data so you can see what it looks like
-//
-//for (int x = 0; x < (IMAGE_DIM / 2 + 1); x++)
-//
-//{
-//
-//	for (int y = 0; y < IMAGE_DIM; y++)
-//
-//	{
-//
-//		// initialize the input image memory somehow
-//
-//		// (this probably comes from a file or image buffer or something)
-//
-//		printf("h_complex_imgSpec[%d,%d] = %f + %fi\n", x, y, h_complex_imgSpec[y * (IMAGE_DIM / 2 + 1) + x].x, h_complex_imgSpec[y * (IMAGE_DIM / 2 + 1) + x].y);
-//
-//	}
-//
-//}
-//
-//// here you can modify or filter the data in the frequency domain
-//
-//// TODO: insert your filter code here, or whatever
-//
-//// NOTE: you can/should modify it on the GPU/DEVICE, not the HOST
-//
-//// IF you modify it on the HOST you will need to cudaMemcpy it back to the DEVICE
-//
-//// now run the inverse FFT on the device (complex to real)
-//
-//cufftExecC2R(inverseFFTPlan, d_complex_imgSpec, d_imgF);
-//
-//// NOTE: the data in d_imgF is not normalized at this point
-//
-//// Normalize the data in place - IFFT Normalization is 
-//
-//// dividing all elements by the total numbers of elements in the matrix/image/array (ie, number of pixels)
-//
-//NormalizeIFFT << < grid, threads >> > (d_imgF, IMAGE_DIM, IMAGE_DIM, 256.0f * 256.0f);
-//
-//// Copy the DEVICE memory to the HOST memory
-//
-//(cudaMemcpy(h_imgF, d_imgF, m_num_real_elements * sizeof(float), cudaMemcpyDeviceToHost));
-//
-//// print the elements of the resulting data
-//
-//for (int i = 0; i < m_num_real_elements; i++)
-//
-//{
-//
-//	printf("h_imgF[%d] = %f\n", i, h_imgF[i]);
-//
-//}
-//
-//// CLEANUP HOST MEMORY
-//
-//free(h_img);
-//
-//free(h_imgF);
-//
-//// CLEANUP DEVICE MEMORY
-//
-//(cudaFree(d_img));
-//
-//(cudaFree(d_complex_imgSpec));
-//
-//(cudaFree(d_imgF));
