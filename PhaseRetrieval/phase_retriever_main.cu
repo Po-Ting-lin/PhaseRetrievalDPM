@@ -6,36 +6,57 @@
 #define DEBUG false
 #define TIMER true
 
-void processPhaseRetriever(cv::Mat& src) {
+void phaseRetriever(cv::Mat& sp, cv::Mat& bg, float*& dst) {
 	PhaseRetrieverInfo info;
-	info.Image = &src;
+	info.Image = nullptr;
 	info.WrappedImage = nullptr;
-	info.Width = src.cols;
-	info.Height = src.rows;
-	info.CroppedWidth = src.cols / 4;
-	info.CroppedHeight = src.rows / 4;
-	info.NumberOfRealElements = src.cols * src.rows;
-	info.NumberOfCropElements = (src.cols / 4) * (src.rows / 4);
+	info.UnwrappedImage = nullptr;
+	info.Width = sp.cols;
+	info.Height = sp.rows;
+	info.CroppedWidth = sp.cols / 4;
+	info.CroppedHeight = sp.rows / 4;
+	info.NumberOfRealElements = sp.cols * sp.rows;
+	info.NumberOfCropElements = (sp.cols / 4) * (sp.rows / 4);
 	info.Blocks = new dim3(TILE_DIM, TILE_DIM);
-	info.Grids = new dim3(iDivUp(info.Width, TILE_DIM), iDivUp(info.Height, TILE_DIM));
-	info.CroppedGrids = new dim3(iDivUp(info.CroppedWidth, TILE_DIM), iDivUp(info.CroppedHeight, TILE_DIM));
+	info.Grids = new dim3(iDivUp(sp.cols, TILE_DIM), iDivUp(sp.rows, TILE_DIM));
+	info.CroppedGrids = new dim3(iDivUp(sp.cols / 4, TILE_DIM), iDivUp(sp.rows / 4, TILE_DIM));
+	
+	float* sp_unwarpped = nullptr;
+	float* bg_unwarpped = nullptr;
+	processPhaseRetriever(sp, sp_unwarpped, info);
+	processPhaseRetriever(bg, bg_unwarpped, info);
 
-#if TIMER
+	for (int i = 0; i < info.NumberOfCropElements; i++) {
+		sp_unwarpped[i] -= bg_unwarpped[i];
+	}
+	dst = sp_unwarpped;
+	
+	free(bg_unwarpped);
+	delete info.Blocks;
+	delete info.Grids;
+	delete info.CroppedGrids;
+}
+
+void processPhaseRetriever(cv::Mat& src, float*& dst, PhaseRetrieverInfo& info) {
+	info.Image = &src;
+
+#if false
 	auto t0 = std::chrono::system_clock::now();
 #endif
 	
 	getWrappedImage(info);
 
-#if TIMER
+#if false
 	auto t1 = std::chrono::system_clock::now();
 #endif
-
-	printTime(t0, t1, "getWrappedImage");
 	getUnwrappedImage(info);
 
-	delete info.Blocks;
-	delete info.Grids;
-	delete info.CroppedGrids;
+#if false
+	auto t2 = std::chrono::system_clock::now();
+	printTime(t0, t1, "getWrappedImage");
+	printTime(t1, t2, "getUnwrappedImage");
+#endif
+	dst = info.UnwrappedImage;
 }
 
 void getWrappedImage(PhaseRetrieverInfo& info) {
@@ -53,7 +74,6 @@ void getWrappedImage(PhaseRetrieverInfo& info) {
 	cufftHandle ifftPlan;
 	gpuErrorCheck(cufftPlan2d(&fftPlan, info.Height, info.Width, CUFFT_C2C));
 	gpuErrorCheck(cufftPlan2d(&ifftPlan, info.CroppedWidth, info.CroppedHeight, CUFFT_C2C));
-
 
 	// aysn H to D
 	cudaStream_t stream[D_NUM_STREAMS];
@@ -151,25 +171,123 @@ void getWrappedImage(PhaseRetrieverInfo& info) {
 }
 
 void getUnwrappedImage(PhaseRetrieverInfo& info) {
-#if true
+#if DEBUG
 	float* h_wrapped_image = (float*)malloc(info.NumberOfCropElements * sizeof(float));
 	gpuErrorCheck(cudaMemcpy(h_wrapped_image, info.WrappedImage, info.NumberOfCropElements * sizeof(float), cudaMemcpyDeviceToHost));
 	displayImage(h_wrapped_image, info.CroppedWidth, info.CroppedHeight, false);
+	free(h_wrapped_image);
 #endif
 
-	float* dx;
-	float* dy;
-	gpuErrorCheck(cudaMalloc((float**)&dx, info.NumberOfCropElements * sizeof(float)));
-	gpuErrorCheck(cudaMalloc((float**)&dy, info.NumberOfCropElements * sizeof(float)));
+	float* d_dx;
+	float* d_dy;
+	float* d_sumC;
+	float* d_divider;
+	gpuErrorCheck(cudaMalloc((float**)&d_dx, info.NumberOfCropElements * sizeof(float)));
+	gpuErrorCheck(cudaMalloc((float**)&d_dy, info.NumberOfCropElements * sizeof(float)));
+	gpuErrorCheck(cudaMalloc((float**)&d_sumC, info.NumberOfCropElements * sizeof(float)));
+	gpuErrorCheck(cudaMalloc((float**)&d_divider, info.NumberOfCropElements * sizeof(float)));
+	float tx = PI / info.CroppedWidth;
+	float ty = PI / info.CroppedHeight;
 	// diff
+	applyDifference<<<*info.CroppedGrids, *info.Blocks >>>(info.WrappedImage, d_dx, d_dy, info.CroppedWidth, info.CroppedHeight);
+	gpuErrorCheck(cudaDeviceSynchronize());
 
-	// F1
+	
+#if DEBUG
+	float* h_dx = (float*)malloc(info.NumberOfCropElements * sizeof(float));
+	gpuErrorCheck(cudaMemcpy(h_dx, d_dx, info.NumberOfCropElements * sizeof(float), cudaMemcpyDeviceToHost));
+	float* h_dy = (float*)malloc(info.NumberOfCropElements * sizeof(float));
+	gpuErrorCheck(cudaMemcpy(h_dy, d_dy, info.NumberOfCropElements * sizeof(float), cudaMemcpyDeviceToHost));
+	//displayImage(h_dx, info.CroppedWidth, info.CroppedHeight, false);
 
-	// F2
+	std::cout << "***********************dx section***********************" << std::endl;
+	for (int i = 0; i < 10; i++) {
+		std::cout << "i: " << i << "; value: " << h_dx[i] << std::endl;
+	}
+	for (int i = info.CroppedWidth - 10; i < info.CroppedWidth; i++) {
+		std::cout << "i: " << i << "; value: " << h_dx[i] << std::endl;
+	}
+	std::cout << "***********************dy section***********************" << std::endl;
+	for (int i = 0; i < 10; i++) {
+		std::cout << "i: " << i << "; value: " << h_dy[i] << std::endl;
+	}
+	for (int i = info.CroppedWidth - 10; i < info.CroppedWidth; i++) {
+		std::cout << "i: " << i << "; value: " << h_dy[i] << std::endl;
+	}
+	free(h_dx);
+	free(h_dy);
+#endif
+	
+	applySum << <*info.CroppedGrids, *info.Blocks >> > (d_dx, d_dy, d_sumC, d_divider, tx, ty, info.CroppedWidth, info.CroppedHeight);
+	gpuErrorCheck(cudaDeviceSynchronize());
 
-	// DCT
+	gpuErrorCheck(cudaFree(d_dx));
+	gpuErrorCheck(cudaFree(d_dy));
 
-	// divide
+	float* h_sumC = (float*)malloc(info.NumberOfCropElements * sizeof(float));
+	gpuErrorCheck(cudaMemcpy(h_sumC, d_sumC, info.NumberOfCropElements * sizeof(float), cudaMemcpyDeviceToHost));
+	float* h_divider = (float*)malloc(info.NumberOfCropElements * sizeof(float));
+	gpuErrorCheck(cudaMemcpy(h_divider, d_divider, info.NumberOfCropElements * sizeof(float), cudaMemcpyDeviceToHost));
+
+#if DEBUG
+	std::cout << "***********************sumC section***********************" << std::endl;
+	for (int i = 0; i < 10; i++) {
+		std::cout << "i: " << i << "; value: " << h_sumC[i] << std::endl;
+	}
+	for (int i = info.CroppedWidth - 10; i < info.CroppedWidth; i++) {
+		std::cout << "i: " << i << "; value: " << h_sumC[i] << std::endl;
+	}
+	std::cout << "***********************divider section***********************" << std::endl;
+	for (int i = 0; i < 10; i++) {
+		std::cout << "i: " << i << "; value: " << h_divider[i] << std::endl;
+	}
+	for (int i = info.CroppedWidth - 10; i < info.CroppedWidth; i++) {
+		std::cout << "i: " << i << "; value: " << h_divider[i] << std::endl;
+	}
+#endif
+	cv::Mat sumC_mat(info.CroppedHeight, info.CroppedWidth, CV_32FC1, h_sumC);
+	cv::dct(sumC_mat, sumC_mat, cv::DCT_ROWS);
+	cv::transpose(sumC_mat, sumC_mat);
+	cv::dct(sumC_mat, sumC_mat, cv::DCT_ROWS);
+	cv::transpose(sumC_mat, sumC_mat);
+	
+#if DEBUG
+	for (int i = 0; i < 10; i++) {
+		std::cout << "i: " << i << "; value: " << h_sumC[i] << std::endl;
+	}
+	for (int i = 0 + info.CroppedWidth; i < 10 + info.CroppedWidth; i++) {
+		std::cout << "i: " << i << "; value: " << h_sumC[i] << std::endl;
+	}
+#endif
+	
+	// divide, can be optimized
+	for (int i = 0; i < info.NumberOfCropElements; i++) {
+		if (h_divider[i] != 0.0f) {
+			h_sumC[i] = h_sumC[i] / h_divider[i];
+		}
+	}
 
 	// iDCT
+	cv::idct(sumC_mat, sumC_mat, cv::DCT_ROWS);
+	cv::transpose(sumC_mat, sumC_mat);
+	cv::idct(sumC_mat, sumC_mat, cv::DCT_ROWS);
+	cv::transpose(sumC_mat, sumC_mat);
+
+#if DEBUG
+	for (int i = 0; i < 10; i++) {
+		std::cout << "i: " << i << "; value: " << h_sumC[i] << std::endl;
+	}
+	for (int i = 0 + info.CroppedWidth; i < 10 + info.CroppedWidth; i++) {
+		std::cout << "i: " << i << "; value: " << h_sumC[i] << std::endl;
+	}
+	displayImage(h_sumC, info.CroppedWidth, info.CroppedHeight, false);
+#endif
+
+	info.UnwrappedImage = h_sumC;
+
+	// free
+	free(h_divider);
+	gpuErrorCheck(cudaFree(d_sumC));
+	gpuErrorCheck(cudaFree(d_divider));
+	gpuErrorCheck(cudaFree(info.WrappedImage));
 }

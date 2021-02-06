@@ -25,12 +25,14 @@ int main(void) {
 		return -1;
 	}
 
-	//displayImage(sp, "sp1", true);
-	//displayImage(bg, "bg1", true);
+	float* result = nullptr;
 
-	processPhaseRetriever(sp);
-	
+	auto t0 = std::chrono::system_clock::now();
+	phaseRetriever(sp, bg, result);
+	auto t1 = std::chrono::system_clock::now();
+	printTime(t0, t1, "total elapsed time");
 
+	displayImage(result, 768, 768, false);
 
 	return 0;
 }

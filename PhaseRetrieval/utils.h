@@ -1,5 +1,4 @@
 #pragma once
-#define TILE_DIM 32
 
 //Round a / b to nearest higher integer value
 inline int iDivUp(int a, int b)

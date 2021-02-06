@@ -29,6 +29,7 @@ struct PhaseRetrieverInfo
 {
     cv::Mat* Image;
     float* WrappedImage;
+    float* UnwrappedImage;
     int Width;
     int Height;
     int CroppedWidth;
@@ -40,7 +41,8 @@ struct PhaseRetrieverInfo
     dim3* Blocks;
 };
 
-void processPhaseRetriever(cv::Mat& src);
+void phaseRetriever(cv::Mat& sp, cv::Mat& bg, float*& dst);
+void processPhaseRetriever(cv::Mat& src, float*& dst, PhaseRetrieverInfo& info);
 void getWrappedImage(PhaseRetrieverInfo& info);
 void getUnwrappedImage(PhaseRetrieverInfo& info);
 __global__ void realToComplex(uchar* src, fComplex* dst, int size);
@@ -49,3 +51,5 @@ __global__ void copyInterferenceComponentRoughly(float* src, float* dst, int src
 __global__ void copyInterferenceComponentDebug(float* src, float* dst, int centerX, int centerY, int srcWidth, int srcHeight, int dstWidth, int dstHeight);
 __global__ void copyInterferenceComponent(fComplex* src, fComplex* dst, int centerX, int centerY, int srcWidth, int srcHeight, int dstWidth, int dstHeight);
 __global__ void applyArcTan(fComplex* src, float* dst, int srcWidth, int srcHeight);
+__global__ void applyDifference(float* src, float* dxp, float* dyp, int srcWidth, int srcHeight);
+__global__ void applySum(float* dxp, float* dyp, float* sumC, float* divider, float tx, float ty, int srcWidth, int srcHeight);
