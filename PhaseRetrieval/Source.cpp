@@ -1,19 +1,4 @@
-#include <opencv2/opencv.hpp>
 #include "phase_retriever.cuh"
-
-static void displayImage(const cv::Mat& image, const char* name, bool mag) {
-	cv::Mat Out;
-	if (mag) {
-		cv::resize(image, Out, cv::Size(image.cols / 4, image.rows / 4), 5, 5);
-	}
-	else {
-		image.copyTo(Out);
-	}
-	cv::namedWindow(name, cv::WINDOW_AUTOSIZE);
-	cv::moveWindow(name, 200, 200);
-	cv::imshow(name, Out);
-	cv::waitKey(0);
-}
 
 int main(void) {
 	cv::Mat sp, bg;
@@ -25,10 +10,14 @@ int main(void) {
 		return -1;
 	}
 
-	float* result = nullptr;
+	float* result = new float[768 * 768];
+	int spx = 0;
+	int spy = 0;
+	int bgx = 0;
+	int bgy = 0;
 
 	auto t0 = std::chrono::system_clock::now();
-	phaseRetriever(sp, bg, result);
+	PhaseRetriever(sp.data, bg.data, result, sp.cols, sp.rows, spx, spy, bgx, bgy);
 	auto t1 = std::chrono::system_clock::now();
 	printTime(t0, t1, "total elapsed time");
 

@@ -41,22 +41,7 @@ __global__ void copyInterferenceComponentDebug(float* src, float* dst, int cente
     }
     int dstX = -1;
     int dstY = -1;
-    if (x < hw && y < hh) {
-         dstX = x + hw;
-         dstY = y + hh;
-    }
-    else if (x >= hw && y < hh) {
-         dstX = x - hw;
-         dstY = y + hh;
-    }
-    else if (x < hw && y >= hh) {
-         dstX = x + hw;
-         dstY = y - hh;
-    }
-    else {
-         dstX = x - hw;
-         dstY = y - hh;
-    }
+    frequencyShift(x, y, hw, hh, dstX, dstY);
     dst[dstY * dstWidth + dstX] = src[srcY * srcWidth + srcX];
 }
 
@@ -71,25 +56,9 @@ __global__ void copyInterferenceComponent(fComplex* src, fComplex* dst, int cent
     if (srcX < 0) {
         srcX = srcWidth + srcX;
     }
-    // FFT shift
     int dstX = -1;
     int dstY = -1;
-    if (x < hw && y < hh) {
-        dstX = x + hw;
-        dstY = y + hh;
-    }
-    else if (x >= hw && y < hh) {
-        dstX = x - hw;
-        dstY = y + hh;
-    }
-    else if (x < hw && y >= hh) {
-        dstX = x + hw;
-        dstY = y - hh;
-    }
-    else {
-        dstX = x - hw;
-        dstY = y - hh;
-    }
+    frequencyShift(x, y, hw, hh, dstX, dstY);
     dst[dstY * dstWidth + dstX].x = src[srcY * srcWidth + srcX].x;
     dst[dstY * dstWidth + dstX].y = src[srcY * srcWidth + srcX].y;
 }
@@ -116,8 +85,8 @@ __global__ void applyDifference(float* src, float* dxp, float* dyp, int srcWidth
     }
     float sign_value_x = signbit(dx) ? -1.0f : 1.0f; // branching, which can be optimized!
     float sign_value_y = signbit(dy) ? -1.0f : 1.0f; // branching, which can be optimized!
-    dxp[i] = dx - DOUBLEPI * sign_value_x * floorf((fabsf(dx) + PI) / DOUBLEPI);
-    dyp[i] = dy - DOUBLEPI * sign_value_y * floorf((fabsf(dy) + PI) / DOUBLEPI);
+    dxp[i] = dx - PI2 * sign_value_x * floorf((fabsf(dx) + PI) / PI2);
+    dyp[i] = dy - PI2 * sign_value_y * floorf((fabsf(dy) + PI) / PI2);
 }
 
 __global__ void applySum(float* dxp, float* dyp, float* sumC, float* divider, float tx, float ty, int srcWidth, int srcHeight) {
@@ -151,4 +120,23 @@ __global__ void applySum(float* dxp, float* dyp, float* sumC, float* divider, fl
     }
     sumC[i] = c1 - c2 + c3 - c4;
     divider[i] = 2.0f * cosf(tx * x) + 2.0f * cosf(ty * y) - 4.0f;
+}
+
+__device__ void frequencyShift(int x, int y, int hw, int hh, int& dstX, int& dstY) {
+    if (x < hw && y < hh) {
+        dstX = x + hw;
+        dstY = y + hh;
+    }
+    else if (x >= hw && y < hh) {
+        dstX = x - hw;
+        dstY = y + hh;
+    }
+    else if (x < hw && y >= hh) {
+        dstX = x + hw;
+        dstY = y - hh;
+    }
+    else {
+        dstX = x - hw;
+        dstY = y - hh;
+    }
 }

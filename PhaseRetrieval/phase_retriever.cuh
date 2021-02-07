@@ -13,38 +13,13 @@
 #include <thrust/device_vector.h>
 #include <thrust/extrema.h>
 
-typedef unsigned int uint;
 
-#ifdef __CUDACC__
-typedef float2 fComplex;
-#else
-typedef struct
-{
-    float x;
-    float y;
-} fComplex;
-#endif
-
-struct PhaseRetrieverInfo
-{
-    cv::Mat* Image;
-    float* WrappedImage;
-    float* UnwrappedImage;
-    int Width;
-    int Height;
-    int CroppedWidth;
-    int CroppedHeight;
-    int NumberOfRealElements;
-    int NumberOfCropElements;
-    dim3* Grids;
-    dim3* CroppedGrids;
-    dim3* Blocks;
-};
-
-void phaseRetriever(cv::Mat& sp, cv::Mat& bg, float*& dst);
-void processPhaseRetriever(cv::Mat& src, float*& dst, PhaseRetrieverInfo& info);
-void getWrappedImage(PhaseRetrieverInfo& info);
-void getUnwrappedImage(PhaseRetrieverInfo& info);
+extern "C" { 
+    ExportDll void PhaseRetriever(uchar* sp, uchar* bg, float* dst, int width, int height, int spx, int spy, int bgx, int bgy);
+}
+void imageRetriever(uchar* src, float*& dst, PhaseRetrieverInfo& info, bool isSp);
+void getWrappedImage(PhaseRetrieverInfo& info, bool isSp);
+void getUnwrappedImage(PhaseRetrieverInfo& info, bool isSp);
 __global__ void realToComplex(uchar* src, fComplex* dst, int size);
 __global__ void complexToMagnitude(fComplex* src, float* dst, int width, int height);
 __global__ void copyInterferenceComponentRoughly(float* src, float* dst, int srcWidth, int srcHeight, int dstWidth, int dstHeight);
@@ -53,3 +28,4 @@ __global__ void copyInterferenceComponent(fComplex* src, fComplex* dst, int cent
 __global__ void applyArcTan(fComplex* src, float* dst, int srcWidth, int srcHeight);
 __global__ void applyDifference(float* src, float* dxp, float* dyp, int srcWidth, int srcHeight);
 __global__ void applySum(float* dxp, float* dyp, float* sumC, float* divider, float tx, float ty, int srcWidth, int srcHeight);
+__device__ void frequencyShift(int x, int y, int hw, int hh, int& dstX, int& dstY);
