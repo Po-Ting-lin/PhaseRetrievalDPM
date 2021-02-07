@@ -1,9 +1,11 @@
-from PhaseRetrival import PhaseRetrieval, Offset
+import time
 import cv2
 from matplotlib import pyplot as plt
-import time
+from PhaseRetrival import PhaseRetrieval, Offset
+
 
 def main():
+    lib_path = r"PhaseRetrieval.dll"
     sp = cv2.imread(r"sp1.bmp", cv2.IMREAD_GRAYSCALE)
     bg = cv2.imread(r"bg1.bmp", cv2.IMREAD_GRAYSCALE)
     offset = Offset()
@@ -13,7 +15,7 @@ def main():
     offset.bgy = 0
     image_width, image_height = sp.shape
 
-    phase_retrieval = PhaseRetrieval(image_width, image_height, offset)
+    phase_retrieval = PhaseRetrieval(image_width, image_height, offset, lib_path)
     time1 = time.time()
     result = phase_retrieval.phase_retrieval_gpu(sp, bg)
     time2 = time.time()
