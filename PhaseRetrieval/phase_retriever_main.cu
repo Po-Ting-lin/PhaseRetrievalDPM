@@ -206,25 +206,14 @@ void getUnwrappedImage(PhaseRetrieverInfo& info, bool isSp) {
 	float* h_divider = (float*)malloc(info.NumberOfCropElements * sizeof(float));
 	gpuErrorCheck(cudaMemcpy(h_divider, d_divider, info.NumberOfCropElements * sizeof(float), cudaMemcpyDeviceToHost));
 
-	// DCT
 	cv::Mat sumC_mat(info.CroppedHeight, info.CroppedWidth, CV_32FC1, h_sumC);
-	cv::dct(sumC_mat, sumC_mat, cv::DCT_ROWS);
-	cv::transpose(sumC_mat, sumC_mat);
-	cv::dct(sumC_mat, sumC_mat, cv::DCT_ROWS);
-	cv::transpose(sumC_mat, sumC_mat);
-
-	// divide, can be optimized
+	cv::dct(sumC_mat, sumC_mat);
 	for (int i = 0; i < info.NumberOfCropElements; i++) {
 		if (h_divider[i] != 0.0f) {
-			h_sumC[i] = h_sumC[i] / h_divider[i];
+			h_sumC[i] = h_sumC[i] / h_divider[i]; // divide, can be optimized
 		}
 	}
-
-	// iDCT
-	cv::idct(sumC_mat, sumC_mat, cv::DCT_ROWS);
-	cv::transpose(sumC_mat, sumC_mat);
-	cv::idct(sumC_mat, sumC_mat, cv::DCT_ROWS);
-	cv::transpose(sumC_mat, sumC_mat);
+	cv::idct(sumC_mat, sumC_mat);
 	info.UnwrappedImage = h_sumC;
 
 	// free
