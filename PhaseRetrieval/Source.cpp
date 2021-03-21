@@ -1,4 +1,5 @@
 #include "phase_retriever.cuh"
+#include "warmup.cuh"
 
 int main(void) {
 	cv::Mat sp, bg;
@@ -15,6 +16,8 @@ int main(void) {
 	int spy = 0;
 	int bgx = 0;
 	int bgy = 0;
+
+	warmUpGpu();
 
 	auto t0 = std::chrono::system_clock::now();
 	PhaseRetriever(sp.data, bg.data, result, sp.cols, sp.rows, spx, spy, bgx, bgy);

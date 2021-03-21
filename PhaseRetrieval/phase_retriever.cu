@@ -11,7 +11,9 @@ __global__ void complexToMagnitude(fComplex* src, float* dst, int width, int hei
     int x = threadIdx.x + blockDim.x * blockIdx.x;
     int y = threadIdx.y + blockDim.y * blockIdx.y;
     if (x >= width || y >= height) return;
-    dst[y * width + x] = 20.0f * logf(sqrtf(powf(src[y * width + x].x, 2.0f) + powf(src[y * width + x].y, 2.0f)));
+    int i = y * width + x;
+    const float floatTab[2] = { src[i].x , src[i].y };
+    dst[i] = 20.0f * logf(normf(2, floatTab));
 }
 
 __global__ void copyInterferenceComponentRoughly(float* src, float* dst, int srcWidth, int srcHeight, int dstWidth, int dstHeight) {

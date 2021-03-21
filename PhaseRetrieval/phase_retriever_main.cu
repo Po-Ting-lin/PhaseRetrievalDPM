@@ -1,6 +1,4 @@
 #include "phase_retriever.cuh"
-#include <cufft.h>
-#include <iostream>
 
 #define DEBUG false
 #define TIMER false
@@ -24,10 +22,10 @@ void PhaseRetriever(uchar* sp, uchar* bg, float* dst, int width, int height, int
 	info.DataElementsPerStream = info.NumberOfRealElements / D_NUM_STREAMS;
 	info.DataBytesPerStream = info.NumberOfRealElements * sizeof(uchar) / D_NUM_STREAMS;
 	info.Blocks = new dim3(TILE_DIM, TILE_DIM);
-	info.Blocks1D = new dim3(TILE_DIM);
+	info.Blocks1D = new dim3(TILE_DIM * 2); // occupancy will be 100% for dim.x = 64
 	info.Grids = new dim3(iDivUp(width, TILE_DIM), iDivUp(height, TILE_DIM));
 	info.CroppedGrids = new dim3(iDivUp(width / 4, TILE_DIM), iDivUp(height / 4, TILE_DIM));
-	info.Grids1D = new dim3(iDivUp(info.DataElementsPerStream, TILE_DIM));
+	info.Grids1D = new dim3(iDivUp(info.DataElementsPerStream, TILE_DIM * 2));
 	
 	float* sp_unwarpped = nullptr;
 	float* bg_unwarpped = nullptr;
@@ -208,10 +206,9 @@ void getUnwrappedImage(PhaseRetrieverInfo& info, bool isSp) {
 
 	cv::Mat sumC_mat(info.CroppedHeight, info.CroppedWidth, CV_32FC1, h_sumC);
 	cv::dct(sumC_mat, sumC_mat);
+#pragma omp parallel for
 	for (int i = 0; i < info.NumberOfCropElements; i++) {
-		if (h_divider[i] != 0.0f) {
-			h_sumC[i] = h_sumC[i] / h_divider[i]; // divide, can be optimized
-		}
+		if (h_divider[i] != 0.0f) h_sumC[i] = h_sumC[i] / h_divider[i];
 	}
 	cv::idct(sumC_mat, sumC_mat);
 	info.UnwrappedImage = h_sumC;

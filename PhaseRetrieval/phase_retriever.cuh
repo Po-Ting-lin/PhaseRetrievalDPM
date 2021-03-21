@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <opencv2/opencv.hpp>
+#include <cufft.h>
+#include <omp.h>
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 #include "cuda_error.cuh"
