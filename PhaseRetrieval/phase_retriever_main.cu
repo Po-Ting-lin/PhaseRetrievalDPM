@@ -206,7 +206,6 @@ void getUnwrappedImage(PhaseRetrieverInfo& info, bool isSp) {
 
 	cv::Mat sumC_mat(info.CroppedHeight, info.CroppedWidth, CV_32FC1, h_sumC);
 	cv::dct(sumC_mat, sumC_mat);
-#pragma omp parallel for
 	for (int i = 0; i < info.NumberOfCropElements; i++) {
 		if (h_divider[i] != 0.0f) h_sumC[i] = h_sumC[i] / h_divider[i];
 	}
