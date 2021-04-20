@@ -2,6 +2,8 @@
 #include "warmup.cuh"
 
 int main(void) {
+	warmUpGpu();
+	
 	cv::Mat sp, bg;
 	sp = cv::imread(R"(sp1.bmp)", cv::IMREAD_GRAYSCALE);
 	bg = cv::imread(R"(bg1.bmp)", cv::IMREAD_GRAYSCALE);
@@ -17,7 +19,7 @@ int main(void) {
 	int bgx = 0;
 	int bgy = 0;
 
-	warmUpGpu();
+
 
 	auto t0 = std::chrono::system_clock::now();
 	PhaseRetriever(sp.data, bg.data, result, sp.cols, sp.rows, spx, spy, bgx, bgy);
