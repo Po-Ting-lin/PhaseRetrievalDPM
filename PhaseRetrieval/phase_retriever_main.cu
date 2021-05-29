@@ -1,7 +1,7 @@
 #include "phase_retriever.cuh"
 
 #define DEBUG false
-#define TIMER false
+#define TIMER true
 
 void PhaseRetriever(uchar* sp, uchar* bg, float* dst, int width, int height, int spx, int spy, int bgx, int bgy) {
 	PhaseRetrieverInfo info;
@@ -26,15 +26,24 @@ void PhaseRetriever(uchar* sp, uchar* bg, float* dst, int width, int height, int
 	info.Grids = new dim3(iDivUp(width, TILE_DIM), iDivUp(height, TILE_DIM));
 	info.CroppedGrids = new dim3(iDivUp(width / 4, TILE_DIM), iDivUp(height / 4, TILE_DIM));
 	info.Grids1D = new dim3(iDivUp(info.DataElementsPerStream, TILE_DIM * 2));
-	
+	gpuErrorCheck(cufftPlan2d(&info.fftHandle, info.Height, info.Width, CUFFT_C2C));
+	gpuErrorCheck(cufftPlan2d(&info.ifftHandle, info.CroppedWidth, info.CroppedHeight, CUFFT_C2C));
+
 	float* sp_unwarpped = nullptr;
 	float* bg_unwarpped = nullptr;
+	
+#if TIMER
+	auto t0 = std::chrono::system_clock::now();
+#endif
 	imageRetriever(sp, sp_unwarpped, info, true);
 	imageRetriever(bg, bg_unwarpped, info, false);
-
 	for (int i = 0; i < info.NumberOfCropElements; i++) {
 		sp_unwarpped[i] -= bg_unwarpped[i];
 	}
+#if TIMER
+	auto t1 = std::chrono::system_clock::now();
+	printTime(t0, t1, "total elapsed time");
+#endif
 	
 	free(bg_unwarpped);
 	delete info.Blocks;
@@ -71,21 +80,36 @@ void getWrappedImage(PhaseRetrieverInfo& info, bool isSp) {
 	fComplex* d_Spectrum;
 	fComplex* d_SecondCrop;
 	fComplex* d_rawWrapped;
+	float* d_blk_vals;
+	int* d_blk_idx;
+	int* d_blk_num;
+	int* d_max_index;
+	int max_index = 0;
+	const int block_size_1d = TILE_DIM * TILE_DIM;
+	const int grid_size_1d = MIN(MAX_KERNEL_BLOCKS, ((info.NumberOfCropElements + block_size_1d - 1) / block_size_1d));
+	const int max_block = (info.NumberOfCropElements / block_size_1d) + 1;
 
-	// make a FFT plan
-	cufftHandle fftPlan;
-	cufftHandle ifftPlan;
-	gpuErrorCheck(cufftPlan2d(&fftPlan, info.Height, info.Width, CUFFT_C2C));
-	gpuErrorCheck(cufftPlan2d(&ifftPlan, info.CroppedWidth, info.CroppedHeight, CUFFT_C2C));
+	// allocate the resources
+	gpuErrorCheck(cudaMalloc((uchar**)&d_image_ptr, info.NumberOfRealElements * sizeof(uchar)));
+	gpuErrorCheck(cudaMalloc((fComplex**)&d_data, info.NumberOfRealElements * sizeof(fComplex)));
+	gpuErrorCheck(cudaMalloc((fComplex**)&d_Spectrum, info.NumberOfRealElements * sizeof(fComplex)));
+	gpuErrorCheck(cudaMalloc((float**)&d_magnitude, info.NumberOfRealElements * sizeof(float)));
+	gpuErrorCheck(cudaMalloc((float**)&d_firstCrop, info.NumberOfCropElements * sizeof(float)));
+	gpuErrorCheck(cudaMalloc(&d_blk_vals, max_block * sizeof(float)));
+	gpuErrorCheck(cudaMalloc(&d_blk_idx, max_block * sizeof(int)));
+	gpuErrorCheck(cudaMalloc(&d_blk_num, 1 * sizeof(int)));
+	gpuErrorCheck(cudaMalloc(&d_max_index, sizeof(int)));
+	gpuErrorCheck(cudaMalloc((fComplex**)&d_SecondCrop, info.NumberOfCropElements * sizeof(fComplex)));
+	gpuErrorCheck(cudaMalloc((fComplex**)&d_rawWrapped, info.NumberOfCropElements * sizeof(fComplex)));
+	gpuErrorCheck(cudaMalloc((float**)&info.WrappedImage, info.NumberOfCropElements * sizeof(float)));
 
 	// aysn H to D
+	int offset = 0;
 	cudaStream_t stream[D_NUM_STREAMS];
 	for (int i = 0; i < D_NUM_STREAMS; i++) {
 		cudaStreamCreate(&stream[i]);
 	}
-	gpuErrorCheck(cudaMalloc((uchar**)&d_image_ptr, info.NumberOfRealElements * sizeof(uchar)));
-	gpuErrorCheck(cudaMalloc((fComplex**)&d_data, info.NumberOfRealElements * sizeof(fComplex)));
-	int offset = 0;
+	
 	for (int i = 0; i < D_NUM_STREAMS; i++) {
 		offset = i * info.DataElementsPerStream;
 		gpuErrorCheck(cudaMemcpyAsync(&d_image_ptr[offset], &image_ptr[offset], info.DataBytesPerStream, cudaMemcpyHostToDevice, stream[i]));
@@ -95,14 +119,8 @@ void getWrappedImage(PhaseRetrieverInfo& info, bool isSp) {
 	for (int i = 0; i < D_NUM_STREAMS; i++) {
 		gpuErrorCheck(cudaStreamDestroy(stream[i]));
 	}
-
-	// fft
-	gpuErrorCheck(cudaMalloc((fComplex**)&d_Spectrum, info.NumberOfRealElements * sizeof(fComplex)));
-	gpuErrorCheck(cufftExecC2C(fftPlan, (cufftComplex*)d_data, (cufftComplex*)d_Spectrum, CUFFT_FORWARD));
+	gpuErrorCheck(cufftExecC2C(info.fftHandle, (cufftComplex*)d_data, (cufftComplex*)d_Spectrum, CUFFT_FORWARD));
 	gpuErrorCheck(cudaDeviceSynchronize());
-
-	// magnitude
-	gpuErrorCheck(cudaMalloc((float**)&d_magnitude, info.NumberOfRealElements * sizeof(float)));
 	complexToMagnitude << <*info.Grids, *info.Blocks >> > (d_Spectrum, d_magnitude, info.Width, info.Height);
 	gpuErrorCheck(cudaDeviceSynchronize());
 
@@ -113,7 +131,6 @@ void getWrappedImage(PhaseRetrieverInfo& info, bool isSp) {
 #endif
 
 	// find max index
-	gpuErrorCheck(cudaMalloc((float**)&d_firstCrop, info.NumberOfCropElements * sizeof(float)));
 	copyInterferenceComponentRoughly << <*info.CroppedGrids, *info.Blocks >> > (d_magnitude, d_firstCrop, info.Width, info.Height, info.CroppedWidth, info.CroppedHeight);
 	gpuErrorCheck(cudaDeviceSynchronize());
 
@@ -123,13 +140,14 @@ void getWrappedImage(PhaseRetrieverInfo& info, bool isSp) {
 	displayImage(h_firstCrop, info.CroppedWidth, info.CroppedHeight, true);
 #endif
 
-	thrust::device_ptr<float> d_ptr(d_firstCrop);
-	thrust::device_vector<float> d_vec(d_ptr, d_ptr + info.NumberOfCropElements);
-	thrust::device_vector<float>::iterator iter = thrust::max_element(d_vec.begin(), d_vec.end());
-	unsigned int index = iter - d_vec.begin();
-	float max_val = *iter;
-	int max_cropped_x = index % info.CroppedWidth;
-	int max_cropped_y = index / info.CroppedWidth;
+	cudaMemset(d_blk_vals, 0.0f, max_block * sizeof(float));
+	cudaMemset(d_blk_idx, 0, max_block * sizeof(int));
+	cudaMemset(d_blk_num, 0, 1 * sizeof(int));
+	max_idx_kernel << <grid_size_1d, block_size_1d >> > (d_firstCrop, info.NumberOfCropElements, d_max_index, d_blk_vals, d_blk_idx, d_blk_num);
+	cudaMemcpy(&max_index, d_max_index, sizeof(int), cudaMemcpyDeviceToHost);
+
+	int max_cropped_x = max_index % info.CroppedWidth;
+	int max_cropped_y = max_index / info.CroppedWidth;
 	int offset_x = isSp ? info.CroppedSPOffsetX : info.CroppedBGOffsetX;
 	int offset_y = isSp ? info.CroppedSPOffsetY : info.CroppedBGOffsetY;
 	int max_x = max_cropped_x < info.CroppedWidth / 2 ? max_cropped_x + 7 * info.Width / 8 : max_cropped_x - info.CroppedWidth / 2 + offset_x;
@@ -145,23 +163,22 @@ void getWrappedImage(PhaseRetrieverInfo& info, bool isSp) {
 	gpuErrorCheck(cudaMemcpy(h_SecondCropDebug, d_SecondCropDebug, info.NumberOfCropElements * sizeof(float), cudaMemcpyDeviceToHost));
 	displayImage(h_SecondCropDebug, info.CroppedWidth, info.CroppedHeight, false);
 #endif
-	gpuErrorCheck(cudaMalloc((fComplex**)&d_SecondCrop, info.NumberOfCropElements * sizeof(fComplex)));
 	copyInterferenceComponent << <*info.CroppedGrids, *info.Blocks >> > (d_Spectrum, d_SecondCrop, max_x, max_y, info.Width, info.Height, info.CroppedWidth, info.CroppedHeight);
 	gpuErrorCheck(cudaDeviceSynchronize());
 
 	// ifft
-	gpuErrorCheck(cudaMalloc((fComplex**)&d_rawWrapped, info.NumberOfCropElements * sizeof(fComplex)));
-	gpuErrorCheck(cufftExecC2C(ifftPlan, (cufftComplex*)d_SecondCrop, (cufftComplex*)d_rawWrapped, CUFFT_INVERSE));
+	gpuErrorCheck(cufftExecC2C(info.ifftHandle, (cufftComplex*)d_SecondCrop, (cufftComplex*)d_rawWrapped, CUFFT_INVERSE));
 	gpuErrorCheck(cudaDeviceSynchronize());
 
 	// arctan
-	gpuErrorCheck(cudaMalloc((float**)&info.WrappedImage, info.NumberOfCropElements * sizeof(float)));
 	applyArcTan << <*info.CroppedGrids, *info.Blocks >> > (d_rawWrapped, info.WrappedImage, info.CroppedWidth, info.CroppedHeight);
 	gpuErrorCheck(cudaDeviceSynchronize());
 
 	// free
-	gpuErrorCheck(cufftDestroy(fftPlan));
-	gpuErrorCheck(cufftDestroy(ifftPlan));
+	gpuErrorCheck(cudaFree(d_blk_vals));
+	gpuErrorCheck(cudaFree(d_blk_idx));
+	gpuErrorCheck(cudaFree(d_blk_num));
+	gpuErrorCheck(cudaFree(d_max_index));
 	gpuErrorCheck(cudaFree(d_data));
 	gpuErrorCheck(cudaFree(d_magnitude));
 	gpuErrorCheck(cudaFree(d_firstCrop));

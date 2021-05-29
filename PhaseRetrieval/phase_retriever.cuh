@@ -12,8 +12,6 @@
 #include "cuda_error.cuh"
 #include "parameters.h"
 #include "utils.h"
-#include <thrust/device_vector.h>
-#include <thrust/extrema.h>
 
 
 extern "C" { 
@@ -30,4 +28,5 @@ __global__ void copyInterferenceComponent(fComplex* src, fComplex* dst, int cent
 __global__ void applyArcTan(fComplex* src, float* dst, int srcWidth, int srcHeight);
 __global__ void applyDifference(float* src, float* dxp, float* dyp, int srcWidth, int srcHeight);
 __global__ void applySum(float* dxp, float* dyp, float* sumC, float* divider, float tx, float ty, int srcWidth, int srcHeight);
+__global__ void max_idx_kernel(const float* data, const int dsize, int* result, float* blk_vals, int* blk_idxs, int* blk_num);
 __device__ void frequencyShift(int x, int y, int hw, int hh, int& dstX, int& dstY);

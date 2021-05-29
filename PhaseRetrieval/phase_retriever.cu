@@ -1,5 +1,77 @@
 #include "phase_retriever.cuh"
 
+__global__ void max_idx_kernel(const float* data, const int dsize, int* result, float* blk_vals, int* blk_idxs, int* blk_num) {
+    __shared__ volatile float vals[TILE_DIM * TILE_DIM];
+    __shared__ volatile int idxs[TILE_DIM * TILE_DIM];
+    __shared__ volatile int last_block;
+    int idx = threadIdx.x + blockDim.x * blockIdx.x;
+    last_block = 0;
+    float my_val = FLOAT_MIN;
+    int my_idx = -1;
+
+    // sweep from global memory
+    while (idx < dsize) {
+        if (data[idx] > my_val) { // reduce the whole data into gird size
+            my_val = data[idx];
+            my_idx = idx; // but remember the index
+        }
+        idx += blockDim.x * gridDim.x;
+    }
+
+    vals[threadIdx.x] = my_val;
+    idxs[threadIdx.x] = my_idx;
+    __syncthreads();
+
+    for (int offset = ((TILE_DIM * TILE_DIM) >> 1); offset > 0; offset >>= 1) {
+        if (threadIdx.x < offset) {
+            if (vals[threadIdx.x] < vals[threadIdx.x + offset]) {
+                vals[threadIdx.x] = vals[threadIdx.x + offset];
+                idxs[threadIdx.x] = idxs[threadIdx.x + offset];
+            }
+        }
+        __syncthreads();
+    }
+
+    if (!threadIdx.x) { // if threadIdx.x == 0;
+        blk_vals[blockIdx.x] = vals[0];
+        blk_idxs[blockIdx.x] = idxs[0];
+        if (atomicAdd(blk_num, 1) == gridDim.x - 1)
+            last_block = 1;
+    }
+    __syncthreads();
+
+    // all the threads in the last block can access this.
+    if (last_block) {
+        idx = threadIdx.x;
+        my_val = FLOAT_MIN;
+        my_idx = -1;
+
+        while (idx < gridDim.x) {
+            if (blk_vals[idx] > my_val) {
+                my_val = blk_vals[idx];
+                my_idx = blk_idxs[idx];
+            }
+            idx += blockDim.x;
+        }
+        vals[threadIdx.x] = my_val;
+        idxs[threadIdx.x] = my_idx;
+        __syncthreads();
+
+        for (int offset = ((TILE_DIM * TILE_DIM) >> 1); offset > 0; offset >>= 1) {
+            if (threadIdx.x < offset) {
+                if (vals[threadIdx.x] < vals[threadIdx.x + offset]) {
+                    vals[threadIdx.x] = vals[threadIdx.x + offset];
+                    idxs[threadIdx.x] = idxs[threadIdx.x + offset];
+                }
+            }
+            __syncthreads();
+        }
+
+        if (!threadIdx.x)
+            *result = idxs[0];
+    }
+}
+
 __global__ void realToComplex(uchar* src, fComplex* dst, int size) {
     int x = threadIdx.x + blockDim.x * blockIdx.x;
     if (x >= size) return;

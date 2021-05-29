@@ -2,7 +2,13 @@
 #define PI 3.141592654f
 #define PI2 6.283185308f
 #define TILE_DIM 32
-#define D_NUM_STREAMS 8
+#define D_NUM_STREAMS 4
+
+#define MAX_KERNEL_BLOCKS 50
+#define MIN(a,b) ((a>b)?b:a)
+#define FLOAT_MIN -1.0f
+
+
 #define ExportDll __declspec(dllexport)
 typedef unsigned int uint;
 
@@ -34,6 +40,8 @@ struct PhaseRetrieverInfo
     int NumberOfCropElements;
     int DataElementsPerStream;
     int DataBytesPerStream;
+    int fftHandle;
+    int ifftHandle;
     dim3* Grids;
     dim3* CroppedGrids;
     dim3* Blocks;
