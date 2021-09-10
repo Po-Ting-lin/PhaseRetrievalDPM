@@ -28,6 +28,7 @@ struct PhaseRetrieverInfo
     float* WrappedImage;
     float* UnwrappedImage;
     float* Dst;
+    float* SpectrumDst;
     int Width;
     int Height;
     int CroppedWidth;

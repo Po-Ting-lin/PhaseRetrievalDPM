@@ -3,12 +3,13 @@
 #define DEBUG false
 #define TIMER true
 
-void PhaseRetriever(uchar* sp, uchar* bg, float* dst, int width, int height, int spx, int spy, int bgx, int bgy) {
+void PhaseRetriever(uchar* sp, uchar* bg, float* dst, float* spectrumDst, int width, int height, int spx, int spy, int bgx, int bgy) {
 	PhaseRetrieverInfo info;
 	info.Image = nullptr;
 	info.WrappedImage = nullptr;
 	info.UnwrappedImage = nullptr;
 	info.Dst = dst;
+	info.SpectrumDst = spectrumDst;
 	info.Width = width;
 	info.Height = height;
 	info.CroppedWidth = width / 4;
@@ -129,6 +130,10 @@ void getWrappedImage(PhaseRetrieverInfo& info, bool isSp) {
 	gpuErrorCheck(cudaMemcpy(h_magnitude, d_magnitude, info.NumberOfRealElements * sizeof(float), cudaMemcpyDeviceToHost));
 	displayImage(h_magnitude, info.Width, info.Height, true);
 #endif
+
+	if (isSp) {
+		gpuErrorCheck(cudaMemcpy(info.SpectrumDst, d_magnitude, info.NumberOfRealElements * sizeof(float), cudaMemcpyDeviceToHost));
+	}
 
 	// find max index
 	copyInterferenceComponentRoughly << <*info.CroppedGrids, *info.Blocks >> > (d_magnitude, d_firstCrop, info.Width, info.Height, info.CroppedWidth, info.CroppedHeight);

@@ -15,7 +15,7 @@
 
 
 extern "C" { 
-    ExportDll void PhaseRetriever(uchar* sp, uchar* bg, float* dst, int width, int height, int spx, int spy, int bgx, int bgy);
+    ExportDll void PhaseRetriever(uchar* sp, uchar* bg, float* dst, float* spectrumDst, int width, int height, int spx, int spy, int bgx, int bgy);
 }
 void imageRetriever(uchar* src, float*& dst, PhaseRetrieverInfo& info, bool isSp);
 void getWrappedImage(PhaseRetrieverInfo& info, bool isSp);

@@ -1,4 +1,4 @@
-#include<windows.h>
+#include <windows.h>
 #include "phase_retriever.cuh"
 #include "warmup.cuh"
 
@@ -15,12 +15,14 @@ int main(void) {
 		return -1;
 	}
 	float* result = new float[768 * 768];
+	float* spectrum_dst = new float[3072 * 3072];
 	int spx = 0;
 	int spy = 0;
 	int bgx = 0;
 	int bgy = 0;
-	PhaseRetriever(sp.data, bg.data, result, sp.cols, sp.rows, spx, spy, bgx, bgy);
+	PhaseRetriever(sp.data, bg.data, result, spectrum_dst, sp.cols, sp.rows, spx, spy, bgx, bgy);
 	displayImage(result, 768, 768, false);
-
+	delete[] result;
+	delete[] spectrum_dst;
 	return 0;
 }
